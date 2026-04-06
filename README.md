@@ -154,6 +154,81 @@ Handles concurrent requests through mlx-lm's BatchGenerator. Max concurrent requ
 
 Context scaling support for running smaller context models with Claude Code. Scales reported token counts so that auto-compact triggers at the right timing, and SSE keep-alive prevents read timeouts during long prefill.
 
+### Anthropic API Caching Proxy
+
+A built-in caching proxy that sits between Claude Code and the Anthropic API, reducing cost, latency, and token usage. Works with both **API key** and **subscription** (Pro/Max) authentication. No Apple Silicon required - runs on any platform.
+
+```
+Claude Code  -->  oMLX proxy (cache)  -->  Anthropic API
+```
+
+**Features:**
+- **Response caching**: Identical requests served instantly from SQLite cache
+- **Prompt cache optimization**: Automatically adds `cache_control` breakpoints to maximize Anthropic's native prompt caching
+- **Token & cost tracking**: Real-time metrics on cache hit rates, tokens saved, and estimated cost savings
+- **Streaming support**: Full SSE streaming passthrough with cached replay
+- **Subscription support**: Auto-detects egress proxy for subscription-mode JWT auth
+
+#### Quick Start
+
+```bash
+# Start the proxy (no Apple Silicon / MLX required)
+omlx proxy --port 8321
+
+# Then point Claude Code at it
+export ANTHROPIC_BASE_URL=http://localhost:8321
+claude
+```
+
+For API key mode, also set `ANTHROPIC_API_KEY`. For subscription mode (Pro/Max), Claude Code sends its own auth tokens - the proxy forwards them transparently.
+
+#### Proxy CLI Options
+
+```bash
+omlx proxy \
+  --port 8321 \                          # Port to listen on (default: 8000)
+  --host 0.0.0.0 \                       # Host to bind (default: 127.0.0.1)
+  --upstream-url https://api.anthropic.com \  # Upstream API (default)
+  --upstream-api-key sk-ant-... \        # Override upstream key (optional)
+  --cache-dir ~/.omlx/proxy_cache \      # Cache directory
+  --cache-max-size 2GB \                 # Max cache size (default: 1GB)
+  --cache-ttl 86400 \                    # Cache TTL in seconds (default: 24h)
+  --no-cache                             # Disable caching (passthrough only)
+```
+
+#### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `OMLX_PROXY_ENABLED` | Enable proxy mode (`true`/`false`) |
+| `OMLX_PROXY_UPSTREAM_URL` | Upstream API URL |
+| `OMLX_PROXY_UPSTREAM_API_KEY` | Upstream API key |
+| `OMLX_PROXY_CACHE_ENABLED` | Enable response caching |
+| `OMLX_PROXY_CACHE_DIR` | Cache directory path |
+| `OMLX_PROXY_CACHE_MAX_SIZE` | Max cache size (e.g., `2GB`) |
+| `OMLX_PROXY_CACHE_TTL` | Cache TTL in seconds |
+
+#### Monitoring
+
+Check cache stats and cost savings at the proxy stats endpoint:
+
+```bash
+curl http://localhost:8321/admin/api/proxy/stats
+```
+
+Returns cache hit rate, tokens saved, estimated cost savings, and cache utilization.
+
+#### How It Works
+
+1. Claude Code sends a request to `http://localhost:8321/v1/messages`
+2. The proxy computes a SHA-256 cache key from the request content
+3. **Cache hit**: Response served instantly from SQLite (streaming or non-streaming)
+4. **Cache miss**: Request forwarded to Anthropic API, response streamed to client and cached
+5. The prompt optimizer adds `cache_control` breakpoints to system prompts and tool definitions to maximize Anthropic's server-side prompt caching
+6. Metrics track tokens saved, cost savings, and cache hit rates
+
+Only deterministic requests (temperature=0 or unset) are cached by default. Set `cache_nonzero_temp: true` in settings to cache all requests.
+
 ### Multi-Model Serving
 
 Load LLMs, VLMs, embedding models, and rerankers within the same server. Models are managed through a combination of automatic and manual controls:
@@ -224,10 +299,11 @@ Drop-in replacement for OpenAI and Anthropic APIs. Supports streaming usage stat
 |----------|-------------|
 | `POST /v1/chat/completions` | Chat completions (streaming) |
 | `POST /v1/completions` | Text completions (streaming) |
-| `POST /v1/messages` | Anthropic Messages API |
+| `POST /v1/messages` | Anthropic Messages API (local inference or proxy) |
 | `POST /v1/embeddings` | Text embeddings |
 | `POST /v1/rerank` | Document reranking |
 | `GET /v1/models` | List available models |
+| `GET /admin/api/proxy/stats` | Proxy cache & cost metrics (proxy mode) |
 
 ### Tool Calling & Structured Output
 
@@ -305,6 +381,11 @@ All settings can also be configured from the web admin panel at `/admin`. Settin
 
 ```
 FastAPI Server (OpenAI / Anthropic API)
+    │
+    ├── ProxyEngine (Anthropic API caching proxy - no MLX required)
+    │   ├── ProxyResponseCache (SQLite, TTL + LRU eviction)
+    │   ├── PromptOptimizer (cache_control breakpoints)
+    │   └── ProxyMetrics (tokens, cost, hit rates)
     │
     ├── EnginePool (multi-model, LRU eviction, TTL, manual load/unload)
     │   ├── BatchedEngine (LLMs, continuous batching)
