@@ -10,21 +10,14 @@ Features:
 - OpenAI-compatible API server
 - Paged KV cache with prefix sharing
 - Tiered cache (GPU + paged SSD offloading)
+- Anthropic API caching proxy for Claude Code
+
+Note: Core inference symbols (Scheduler, EngineCore, etc.) are lazily
+imported so that submodules like ``omlx.proxy`` can be used on machines
+without MLX (e.g. Linux servers running the proxy).
 """
 
 from omlx._version import __version__
-
-# Continuous batching engine (core functionality, no torch required)
-from omlx.request import Request, RequestOutput, RequestStatus, SamplingParams
-from omlx.scheduler import Scheduler, SchedulerConfig, SchedulerOutput
-from omlx.engine_core import EngineCore, AsyncEngineCore, EngineConfig
-from omlx.cache.prefix_cache import BlockAwarePrefixCache
-from omlx.cache.paged_cache import PagedCacheManager, CacheBlock, BlockTable
-from omlx.cache.stats import PrefixCacheStats, PagedCacheStats
-from omlx.model_registry import get_registry, ModelOwnershipError
-
-# Backward compatibility alias
-CacheStats = PagedCacheStats
 
 __all__ = [
     # Request management
@@ -54,3 +47,40 @@ __all__ = [
     # Version
     "__version__",
 ]
+
+# Lazy imports: these pull in MLX which is only available on Apple Silicon.
+# Using __getattr__ allows `omlx.proxy` to be imported on any platform.
+_LAZY_IMPORTS = {
+    "Request": "omlx.request",
+    "RequestOutput": "omlx.request",
+    "RequestStatus": "omlx.request",
+    "SamplingParams": "omlx.request",
+    "Scheduler": "omlx.scheduler",
+    "SchedulerConfig": "omlx.scheduler",
+    "SchedulerOutput": "omlx.scheduler",
+    "EngineCore": "omlx.engine_core",
+    "AsyncEngineCore": "omlx.engine_core",
+    "EngineConfig": "omlx.engine_core",
+    "BlockAwarePrefixCache": "omlx.cache.prefix_cache",
+    "PagedCacheManager": "omlx.cache.paged_cache",
+    "CacheBlock": "omlx.cache.paged_cache",
+    "BlockTable": "omlx.cache.paged_cache",
+    "PrefixCacheStats": "omlx.cache.stats",
+    "PagedCacheStats": "omlx.cache.stats",
+    "get_registry": "omlx.model_registry",
+    "ModelOwnershipError": "omlx.model_registry",
+}
+
+
+def __getattr__(name: str):
+    if name == "CacheStats":
+        # Backward compatibility alias
+        from omlx.cache.stats import PagedCacheStats
+        return PagedCacheStats
+    if name in _LAZY_IMPORTS:
+        import importlib
+        mod = importlib.import_module(_LAZY_IMPORTS[name])
+        val = getattr(mod, name)
+        globals()[name] = val  # Cache for fast subsequent access
+        return val
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -106,6 +106,12 @@ def get_ssd_capacity(path: str | Path) -> int:
         return 500 * 1024**3
 
 
+def _default_proxy_settings():
+    """Lazy import to avoid circular dependency."""
+    from .proxy.settings import ProxySettings
+    return ProxySettings()
+
+
 @dataclass
 class ServerSettings:
     """Server configuration settings."""
@@ -637,6 +643,7 @@ class GlobalSettings:
     claude_code: ClaudeCodeSettings = field(default_factory=ClaudeCodeSettings)
     integrations: IntegrationSettings = field(default_factory=IntegrationSettings)
     ui: UISettings = field(default_factory=UISettings)
+    proxy: "ProxySettings" = field(default_factory=lambda: _default_proxy_settings())
 
     @classmethod
     def load(
@@ -728,6 +735,9 @@ class GlobalSettings:
                 )
             if "ui" in data:
                 self.ui = UISettings.from_dict(data["ui"])
+            if "proxy" in data:
+                from .proxy.settings import ProxySettings
+                self.proxy = ProxySettings.from_dict(data["proxy"])
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse settings file {path}: {e}")
@@ -801,6 +811,25 @@ class GlobalSettings:
         # ModelScope settings
         if ms_endpoint := os.getenv("OMLX_MS_ENDPOINT"):
             self.modelscope.endpoint = ms_endpoint
+
+        # Proxy settings
+        if proxy_enabled := os.getenv("OMLX_PROXY_ENABLED"):
+            self.proxy.enabled = proxy_enabled.lower() in ("true", "1", "yes")
+        if proxy_upstream := os.getenv("OMLX_PROXY_UPSTREAM_URL"):
+            self.proxy.upstream_url = proxy_upstream
+        if proxy_key := os.getenv("OMLX_PROXY_UPSTREAM_API_KEY"):
+            self.proxy.upstream_api_key = proxy_key
+        if proxy_cache := os.getenv("OMLX_PROXY_CACHE_ENABLED"):
+            self.proxy.cache_enabled = proxy_cache.lower() in ("true", "1", "yes")
+        if proxy_cache_dir := os.getenv("OMLX_PROXY_CACHE_DIR"):
+            self.proxy.cache_dir = proxy_cache_dir
+        if proxy_cache_max := os.getenv("OMLX_PROXY_CACHE_MAX_SIZE"):
+            self.proxy.cache_max_size = proxy_cache_max
+        if proxy_ttl := os.getenv("OMLX_PROXY_CACHE_TTL"):
+            try:
+                self.proxy.cache_ttl_seconds = int(proxy_ttl)
+            except ValueError:
+                logger.warning(f"Invalid OMLX_PROXY_CACHE_TTL value: {proxy_ttl}")
 
         # Logging settings
         if log_dir := os.getenv("OMLX_LOG_DIR"):
@@ -877,6 +906,24 @@ class GlobalSettings:
         if hasattr(args, "ms_endpoint") and args.ms_endpoint is not None:
             self.modelscope.endpoint = args.ms_endpoint
 
+        # Proxy settings
+        if hasattr(args, "proxy_upstream_url") and args.proxy_upstream_url is not None:
+            self.proxy.upstream_url = args.proxy_upstream_url
+        if (
+            hasattr(args, "proxy_upstream_api_key")
+            and args.proxy_upstream_api_key is not None
+        ):
+            self.proxy.upstream_api_key = args.proxy_upstream_api_key
+        if hasattr(args, "proxy_cache_dir") and args.proxy_cache_dir is not None:
+            self.proxy.cache_dir = args.proxy_cache_dir
+        if (
+            hasattr(args, "proxy_cache_max_size")
+            and args.proxy_cache_max_size is not None
+        ):
+            self.proxy.cache_max_size = args.proxy_cache_max_size
+        if hasattr(args, "proxy_cache_ttl") and args.proxy_cache_ttl is not None:
+            self.proxy.cache_ttl_seconds = args.proxy_cache_ttl
+
     def save(self) -> None:
         """Save current settings to the settings file."""
         self.ensure_directories()
@@ -898,6 +945,7 @@ class GlobalSettings:
             "claude_code": self.claude_code.to_dict(),
             "integrations": self.integrations.to_dict(),
             "ui": self.ui.to_dict(),
+            "proxy": self.proxy.to_dict(),
         }
 
         try:

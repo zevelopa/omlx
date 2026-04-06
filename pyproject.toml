@@ -47,6 +47,8 @@ dependencies = [
     "tiktoken",
     "protobuf",
     "requests>=2.28.0",
+    # httpx for async HTTP (proxy mode + huggingface-hub)
+    "httpx[http2]>=0.27.0",
     # SOCKS proxy support (used by httpx via huggingface-hub)
     "socksio>=1.0.0",
     "tabulate>=0.9.0",
