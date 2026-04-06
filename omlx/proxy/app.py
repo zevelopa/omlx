@@ -105,11 +105,18 @@ def create_proxy_app() -> FastAPI:
     @app.get("/health")
     async def health():
         """Health check endpoint."""
+        import os
+
+        has_proxy = bool(
+            os.environ.get("GLOBAL_AGENT_HTTPS_PROXY")
+            or os.environ.get("HTTPS_PROXY")
+        )
         return {
             "status": "ok",
             "mode": "proxy",
             "upstream": _state.settings.upstream_url if _state.settings else None,
             "cache_enabled": _state.settings.cache_enabled if _state.settings else False,
+            "subscription_proxy_detected": has_proxy,
         }
 
     @app.get("/v1/models")

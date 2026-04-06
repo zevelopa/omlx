@@ -20,8 +20,15 @@ from .settings import ProxySettings
 logger = logging.getLogger(__name__)
 
 # Headers to forward from client to upstream
-_FORWARD_HEADER_PREFIXES = ("anthropic-",)
-_FORWARD_HEADERS = {"x-api-key", "authorization", "content-type"}
+_FORWARD_HEADER_PREFIXES = ("anthropic-", "x-stainless-")
+_FORWARD_HEADERS = {
+    "x-api-key",
+    "authorization",
+    "content-type",
+    # Subscription mode may use these
+    "cookie",
+    "x-request-id",
+}
 
 
 class ProxyEngine:
@@ -37,8 +44,26 @@ class ProxyEngine:
         self._client: httpx.AsyncClient | None = None
 
     async def start(self) -> None:
-        """Initialize the httpx async client."""
-        self._client = httpx.AsyncClient(
+        """Initialize the httpx async client.
+
+        Automatically detects and uses system HTTP proxy settings
+        (GLOBAL_AGENT_HTTPS_PROXY, HTTPS_PROXY, etc.) so that
+        subscription-mode Claude Code traffic flows through the
+        egress gateway with JWT authentication intact.
+        """
+        import os
+
+        # Detect proxy from environment (subscription mode uses these)
+        proxy_url = (
+            os.environ.get("GLOBAL_AGENT_HTTPS_PROXY")
+            or os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy")
+            or os.environ.get("GLOBAL_AGENT_HTTP_PROXY")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("http_proxy")
+        )
+
+        client_kwargs = dict(
             base_url=self.settings.upstream_url,
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0),
             http2=True,
@@ -47,8 +72,19 @@ class ProxyEngine:
                 max_keepalive_connections=20,
             ),
         )
+
+        if proxy_url:
+            client_kwargs["proxy"] = proxy_url
+            logger.info(
+                "ProxyEngine using upstream proxy: %s",
+                proxy_url.split("@")[-1] if "@" in proxy_url else proxy_url,
+            )
+
+        self._client = httpx.AsyncClient(**client_kwargs)
         logger.info(
-            "ProxyEngine started: upstream=%s", self.settings.upstream_url
+            "ProxyEngine started: upstream=%s, proxy=%s",
+            self.settings.upstream_url,
+            "yes" if proxy_url else "no",
         )
 
     async def stop(self) -> None:

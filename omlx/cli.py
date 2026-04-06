@@ -421,11 +421,20 @@ def proxy_command(args):
         port,
     )
 
+    import os
+
+    has_egress_proxy = bool(
+        os.environ.get("GLOBAL_AGENT_HTTPS_PROXY")
+        or os.environ.get("HTTPS_PROXY")
+    )
+
     print(f"\033[36mProxy listening on http://{host}:{port}\033[0m")
     print(f"\033[36mUpstream: {settings.proxy.upstream_url}\033[0m")
     print(f"\033[36mCache: {'enabled' if settings.proxy.cache_enabled else 'disabled'}\033[0m")
+    if has_egress_proxy:
+        print(f"\033[36mSubscription mode: detected egress proxy (JWT auth)\033[0m")
     print()
-    print(f"\033[33mTo use with Claude Code:\033[0m")
+    print(f"\033[33mTo use with Claude Code (API key or subscription):\033[0m")
     print(f"\033[33m  export ANTHROPIC_BASE_URL=http://{host}:{port}\033[0m")
     print()
 
