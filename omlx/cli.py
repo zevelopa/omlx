@@ -366,6 +366,77 @@ def launch_command(args):
     )
 
 
+def proxy_command(args):
+    """Start the Anthropic API caching proxy (no MLX required)."""
+    import logging
+    import uvicorn
+
+    from ._version import __version__
+    from .settings import init_settings
+
+    # Print version banner
+    print(f"\033[36moMLX Proxy - Anthropic API caching proxy\033[0m")
+    print(f"\033[36m└─ Version: {__version__}\033[0m")
+    print()
+
+    # Initialize settings (proxy-specific)
+    settings = init_settings(base_path=args.base_path, cli_args=args)
+
+    # Force proxy enabled
+    settings.proxy.enabled = True
+
+    # Handle --no-cache flag
+    if hasattr(args, "no_cache") and args.no_cache:
+        settings.proxy.cache_enabled = False
+
+    # Configure logging
+    level_name = (args.log_level or settings.server.log_level or "info").upper()
+    log_level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    logging.getLogger("omlx").setLevel(log_level)
+    # Suppress noisy third-party loggers
+    logging.getLogger("httpcore").setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.INFO)
+
+    # Ensure directories exist
+    settings.ensure_directories()
+
+    # Resolve host/port
+    host = args.host or settings.server.host or "127.0.0.1"
+    port = args.port or settings.server.port or 8000
+
+    # Create and initialize the proxy app (no MLX imports!)
+    from .proxy.app import init_proxy_app
+
+    app = init_proxy_app(settings.proxy)
+
+    logging.getLogger("omlx").info(
+        "Starting proxy: upstream=%s, cache=%s, host=%s, port=%d",
+        settings.proxy.upstream_url,
+        "enabled" if settings.proxy.cache_enabled else "disabled",
+        host,
+        port,
+    )
+
+    print(f"\033[36mProxy listening on http://{host}:{port}\033[0m")
+    print(f"\033[36mUpstream: {settings.proxy.upstream_url}\033[0m")
+    print(f"\033[36mCache: {'enabled' if settings.proxy.cache_enabled else 'disabled'}\033[0m")
+    print()
+    print(f"\033[33mTo use with Claude Code:\033[0m")
+    print(f"\033[33m  export ANTHROPIC_BASE_URL=http://{host}:{port}\033[0m")
+    print()
+
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level=level_name.lower(),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="omlx: Production-ready LLM server for Apple Silicon",
@@ -555,12 +626,103 @@ Example directory structure:
         help="OpenClaw tools profile (default: coding)",
     )
 
+    # Proxy command
+    proxy_parser = subparsers.add_parser(
+        "proxy",
+        help="Start Anthropic API caching proxy (no MLX/GPU required)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""
+Start oMLX in proxy mode: a caching proxy between Claude Code and the
+Anthropic API. No local models or Apple Silicon required.
+
+Set ANTHROPIC_BASE_URL=http://localhost:8000 in Claude Code to route
+traffic through this proxy.
+
+Features:
+  - Response caching (reduces cost for repeated/similar requests)
+  - Prompt cache optimization (maximizes Anthropic's native caching)
+  - Token usage tracking and cost estimation
+  - Cache hit/miss metrics
+
+Example:
+  omlx proxy --port 8000
+  omlx proxy --upstream-api-key sk-ant-... --port 9000
+""",
+    )
+    proxy_parser.add_argument(
+        "--host",
+        type=str,
+        default=None,
+        help="Host to bind (default: 127.0.0.1)",
+    )
+    proxy_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Port to bind (default: 8000)",
+    )
+    proxy_parser.add_argument(
+        "--upstream-url",
+        type=str,
+        default=None,
+        dest="proxy_upstream_url",
+        help="Upstream Anthropic API URL (default: https://api.anthropic.com)",
+    )
+    proxy_parser.add_argument(
+        "--upstream-api-key",
+        type=str,
+        default=None,
+        dest="proxy_upstream_api_key",
+        help="API key for upstream (if unset, forwards client's key)",
+    )
+    proxy_parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default=None,
+        dest="proxy_cache_dir",
+        help="Directory for proxy response cache (default: ~/.omlx/proxy_cache)",
+    )
+    proxy_parser.add_argument(
+        "--cache-max-size",
+        type=str,
+        default=None,
+        dest="proxy_cache_max_size",
+        help="Maximum cache size (default: 1GB)",
+    )
+    proxy_parser.add_argument(
+        "--cache-ttl",
+        type=int,
+        default=None,
+        dest="proxy_cache_ttl",
+        help="Cache TTL in seconds (default: 86400 = 24h)",
+    )
+    proxy_parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable response caching",
+    )
+    proxy_parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["debug", "info", "warning", "error"],
+        default=None,
+        help="Log level (default: info)",
+    )
+    proxy_parser.add_argument(
+        "--base-path",
+        type=str,
+        default=None,
+        help="Base directory for oMLX data (default: ~/.omlx)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "serve":
         serve_command(args)
     elif args.command == "launch":
         launch_command(args)
+    elif args.command == "proxy":
+        proxy_command(args)
     else:
         parser.print_help()
         sys.exit(1)

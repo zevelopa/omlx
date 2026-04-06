@@ -2977,6 +2977,57 @@ async def stream_anthropic_messages(
     yield create_message_stop_event()
 
 
+async def _proxy_anthropic_message(
+    request: AnthropicMessagesRequest,
+    http_request: FastAPIRequest,
+):
+    """
+    Forward an Anthropic Messages API request to upstream via the proxy engine.
+
+    Used when proxy mode is enabled in settings, allowing oMLX serve to
+    forward requests for cloud models to the Anthropic API.
+    """
+    import json as _json
+
+    from .proxy.engine import ProxyEngine
+    from .proxy.cache import compute_cache_key, is_cacheable, CachedResponse
+    from .proxy.prompt_optimizer import optimize_cache_breakpoints
+
+    settings = _server_state.global_settings.proxy
+
+    # Lazy-init the proxy engine on _server_state
+    if not hasattr(_server_state, "_proxy_engine") or _server_state._proxy_engine is None:
+        _server_state._proxy_engine = ProxyEngine(settings)
+        await _server_state._proxy_engine.start()
+
+    engine = _server_state._proxy_engine
+
+    # Build request body from the Pydantic model
+    request_body = request.model_dump(exclude_none=True)
+
+    # Optimize for Anthropic prompt caching
+    request_body = optimize_cache_breakpoints(request_body)
+
+    incoming_headers = dict(http_request.headers)
+
+    if request.stream:
+        async def stream_proxy():
+            async for line in engine.stream_request_raw(request_body, incoming_headers):
+                yield line
+
+        return StreamingResponse(
+            stream_proxy(),
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+        )
+    else:
+        response = await engine.forward_request(request_body, incoming_headers)
+        return JSONResponse(
+            content=_json.loads(response.content),
+            status_code=response.status_code,
+        )
+
+
 @app.post("/v1/messages")
 async def create_anthropic_message(
     request: AnthropicMessagesRequest,
@@ -3007,6 +3058,13 @@ async def create_anthropic_message(
         f"messages={len(request.messages)}, stream={request.stream}, "
         f"max_tokens={request.max_tokens}"
     )
+
+    # Proxy mode: forward to upstream Anthropic API instead of local inference
+    if (
+        _server_state.global_settings is not None
+        and _server_state.global_settings.proxy.enabled
+    ):
+        return await _proxy_anthropic_message(request, http_request)
 
     if _server_state.oq_manager and _server_state.oq_manager.is_quantizing:
         raise HTTPException(

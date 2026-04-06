@@ -2607,6 +2607,23 @@ async def get_server_stats(
     }
 
 
+@router.get("/api/proxy/stats")
+async def get_proxy_stats(is_admin: bool = Depends(require_admin)):
+    """Get proxy cache and metrics statistics."""
+    global_settings = _get_global_settings()
+    if not global_settings or not global_settings.proxy.enabled:
+        return {"proxy_enabled": False}
+
+    result = {"proxy_enabled": True}
+
+    # Get metrics from proxy engine if available via server state
+    server_state = _get_server_state()
+    if hasattr(server_state, "_proxy_metrics") and server_state._proxy_metrics:
+        result.update(server_state._proxy_metrics.to_dict())
+
+    return result
+
+
 def _build_active_models_data() -> dict:
     """Build active models status for the dashboard Active Models card."""
     from ..model_discovery import format_size
